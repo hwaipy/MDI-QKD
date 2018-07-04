@@ -3,6 +3,7 @@ package com.hydra.test.groundtdcserver;
 import com.hydra.device.tdc.TDCParser;
 import com.hydra.device.tdc.adapters.GroundTDCDataAdapter;
 import com.hydra.device.tdc.adapters.SimpleTDCDataAdapter;
+import com.hydra.physics.mdiqkd.MDIQKDDataBlockParser;
 import com.xeiam.xchart.Chart;
 import com.xeiam.xchart.Histogram;
 import com.xeiam.xchart.Series;
@@ -20,9 +21,8 @@ import java.net.Socket;
 import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
+import java.util.HashMap;
 import java.util.Iterator;
-import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.logging.Level;
@@ -1635,7 +1635,7 @@ public class AppFrame extends javax.swing.JFrame {
 
     private final BlockingQueue<DataBlock> dataBlockQueue = new LinkedBlockingDeque<>();
 
-    private class DataBlock {
+    public class DataBlock {
 
         private final ArrayList<Long>[] data;
 
@@ -1650,116 +1650,200 @@ public class AppFrame extends javax.swing.JFrame {
     private ArrayList<Double> preYList = new ArrayList<>();
     private double[] homCoins = new double[200];
     private double[] homExpCoins = new double[200];
+    private DataBlockParser dataBlockParser = new MDIQKDDataBlockParser();
+    private ExperimentParameters parameters = new ExperimentParameters("CoarseDelayMeasurement", 70000000, 512000, 0, 0, 1, new ArrayList<>());
+
+    private ExperimentParameters getExperimentParameters() {
+        return parameters;
+    }
+
+    public class ExperimentParameters {
+
+        private String mode;
+        private int repetitionRate;
+        private int pseudoRandomNumberSize;
+        private long delay1;
+        private long delay2;
+        private int integrationTime;
+        private final ArrayList<RandomNumberEntry> randomNumberEntrys;
+
+        public ExperimentParameters(String mode, int repetitionRate, int pseudoRandomNumberSize,
+                long delay1, long delay2, int integrationTime, ArrayList<RandomNumberEntry> randomNumberEntrys) {
+            this.mode = mode;
+            this.repetitionRate = repetitionRate;
+            this.pseudoRandomNumberSize = pseudoRandomNumberSize;
+            this.delay1 = delay1;
+            this.delay2 = delay2;
+            this.integrationTime = integrationTime;
+            this.randomNumberEntrys = randomNumberEntrys;
+        }
+
+        public String getMode() {
+            return mode;
+        }
+
+        public int getRepetitionRate() {
+            return repetitionRate;
+        }
+
+        public int getPseudoRandomNumberSize() {
+            return pseudoRandomNumberSize;
+        }
+
+        public long getDelay1() {
+            return delay1;
+        }
+
+        public long getDelay2() {
+            return delay2;
+        }
+
+        public int getIntegrationTime() {
+            return integrationTime;
+        }
+
+        public ArrayList<RandomNumberEntry> getDecoyRandomNumbers() {
+            return randomNumberEntrys;
+        }
+    }
+
+    public class RandomNumberEntry {
+
+        private final int decoy;
+        private final int basis;
+        private final int encoding;
+
+        public RandomNumberEntry(int decoy, int basis, int encoding) {
+            this.decoy = decoy;
+            this.basis = basis;
+            this.encoding = encoding;
+        }
+
+        public int getDecoy() {
+            return decoy;
+        }
+
+        public int getBasis() {
+            return basis;
+        }
+
+        public int getEncoding() {
+            return encoding;
+        }
+    }
 
     private void doFlushLoop() {
         while (true) {
             try {
                 DataBlock dataBlock = dataBlockQueue.take();
-                final int[] counters = new int[dataBlock.data.length];
-                for (int i = 0; i < dataBlock.data.length; i++) {
-                    ArrayList<Long> timeEventList = dataBlock.data[i];
-                    counters[i] = timeEventList.size();
-                }
+                ExperimentParameters parameters = getExperimentParameters();
+                HashMap<String, Object> result = dataBlockParser.parse(dataBlock, parameters);
 
-                ArrayList<Long> clockList = dataBlock.data[15];
-                ArrayList<Long> triggerList = dataBlock.data[indexTrigger - 1];
-                ArrayList<Long> signalList = dataBlock.data[indexSignal - 1];
-                ArrayList<Long> monitorList = dataBlock.data[4];
-                final Object[] triggerInfo = doAssessTrigger(clockList);
-                final Histo histogram = doHistogram(triggerList, signalList, jCheckBoxClockOut.isSelected() ? clockList : null, clockGateWidth, clockRep);
-                final int coincidenceCount = doCoincidence(histogram, 3000);
-//                final double coinEff1 = ((double) coincidenceCount) / signalList.size();
-//                final double coinEff2 = ((double) coincidenceCount) / triggerList.size();
-                double exp = (counters[0] / 250e6) * (counters[1] / 250e6) * 250e6;
-                final double coinEff = coincidenceCount / exp;
-                this.statisticCoins += coincidenceCount;
-                this.statisticExp += exp;
-//                System.out.println(exp + ", " + statisticExp);
-                final double staticticCoinEff = statisticExp == 0 ? 0 : statisticCoins / statisticExp;
-//                ArrayList<Double> results = new ArrayList<>();
-//                results.add((double) counters[15]);
-//                results.add((double) counters[0]);
-//                results.add((double) counters[1]);
-//                for (int i = -25; i <= 25; i++) {
-//                    results.add((double) doCoincidence(histogram, i * 4000, 3000) / exp);
-//                }
-//                for (Double d : results) {
-//                    System.out.print(d + "\t");
-//                }
-//                System.out.println();
-
-                if (counters[15] != 0 && (counters[0] == 0 || counters[1] == 0 || counters[4] == 0) && jCheckBoxAutoRestart.isSelected()) {
-                    new Thread(() -> {
-                        try {
-                            Socket socket = new Socket("192.168.1.80", 20008);
-                            PrintWriter pw = new PrintWriter(socket.getOutputStream());
-                            pw.println("restart");
-                            pw.close();
-                        } catch (IOException ex) {
-                            Logger.getLogger(AppFrame.class.getName()).log(Level.SEVERE, null, ex);
-                        }
-                    }).start();
-                }
-
-                ArrayList<ShortTermDataItem> stdis = jCheckBoxViewHOM.isSelected()
-                        ? doHOMHistogram(triggerList, signalList, monitorList, clockList, jCheckBoxClockOut.isSelected(), clockGateWidth, clockRep)
-                        : new ArrayList<>();
-
-                SwingUtilities.invokeLater(() -> {
-                    for (int i = 0; i < counters.length; i++) {
-                        counterFields[i].setText(formatComm(counters[i]));
-                    }
-                    jTextFieldTriggerFrequency.setText(formatComm((int) triggerInfo[0]));
-                    jTextFieldTriggerPeriod.setText(formatDouble((double) triggerInfo[1]));
-                    jTextFieldTriggerPeriodPM.setText(formatDouble((double) triggerInfo[2]));
-                    if (histogram != null) {
-                        List<Double> originalXData = histogram.getxAxisData();
-                        ArrayList<Double> xData = new ArrayList<>(originalXData.size());
-                        originalXData.forEach((originalX) -> {
-                            xData.add(originalX / 1000);
-                        });
-                        Series series = chart.getSeriesMap().get("Histogram");
-                        Collection<? extends Number> originalYData = series.getYData();
-                        ArrayList<Double> yData = new ArrayList<>(histogram.getyAxisData());
-                        if (originalYData != null && originalYData.size() == histogram.getyAxisData().size() && jCheckBoxInt.isSelected()) {
-                            Iterator<? extends Number> it = originalYData.iterator();
-                            for (int i = 0; i < yData.size(); i++) {
-                                yData.set(i, yData.get(i) + it.next().doubleValue());
-                            }
-                        }
-
-                        preXList = xData;
-                        preYList = yData;
-//                            System.out.println(xData);
-//                            System.out.println(yData);
-//                            System.out.prinprintlntln("---------------------------");
-                        chartPanel.updateSeries("Histogram", xData, yData, null);
-                        jTextFieldCoincidence.setText("" + coincidenceCount);
-                        jTextFieldCoinEffe1.setText("" + formatDouble(coinEff));
-                        jTextFieldCoinEffe2.setText("" + formatDouble(staticticCoinEff));
-                    }
-
-                    //HOM
-                    for (ShortTermDataItem stdi : stdis) {
-                        homCoins[stdi.k] += stdi.councidenceCount;
-                        homExpCoins[stdi.k] += stdi.expectCoincidenceCount;
-                    }
-                    ArrayList<Double> xData = new ArrayList<>();
-                    ArrayList<Double> yData = new ArrayList<>();
-                    ArrayList<Double> eData = new ArrayList<>();
-                    for (int i = 0; i < homCoins.length; i++) {
-                        double coins = homCoins[i];
-                        double expCoins = homExpCoins[i];
-                        if (expCoins != 0) {
-                            xData.add(Math.pow(1.1, i));
-                            yData.add(coins / expCoins);
-                            eData.add(Math.sqrt(1 / coins) * coins / expCoins);
-                        }
-                    }
-                    if (xData.size() > 0) {
-                        homChartPanel.updateSeries("HOM", xData, yData, eData);
-                    }
-                });
+//                final int[] counters = new int[dataBlock.data.length];
+                //                for (int i = 0; i < dataBlock.data.length; i++) {
+                //                    ArrayList<Long> timeEventList = dataBlock.data[i];
+                //                    counters[i] = timeEventList.size();
+                //                }
+                //
+                //                ArrayList<Long> clockList = dataBlock.data[15];
+                //                ArrayList<Long> triggerList = dataBlock.data[indexTrigger - 1];
+                //                ArrayList<Long> signalList = dataBlock.data[indexSignal - 1];
+                //                ArrayList<Long> monitorList = dataBlock.data[4];
+                //                final Object[] triggerInfo = doAssessTrigger(clockList);
+                //                final Histo histogram = doHistogram(triggerList, signalList, jCheckBoxClockOut.isSelected() ? clockList : null, clockGateWidth, clockRep);
+                //                final int coincidenceCount = doCoincidence(histogram, 3000);
+                ////                final double coinEff1 = ((double) coincidenceCount) / signalList.size();
+                ////                final double coinEff2 = ((double) coincidenceCount) / triggerList.size();
+                //                double exp = (counters[0] / 250e6) * (counters[1] / 250e6) * 250e6;
+                //                final double coinEff = coincidenceCount / exp;
+                //                this.statisticCoins += coincidenceCount;
+                //                this.statisticExp += exp;
+                ////                System.out.println(exp + ", " + statisticExp);
+                //                final double staticticCoinEff = statisticExp == 0 ? 0 : statisticCoins / statisticExp;
+                ////                ArrayList<Double> results = new ArrayList<>();
+                ////                results.add((double) counters[15]);
+                ////                results.add((double) counters[0]);
+                ////                results.add((double) counters[1]);
+                ////                for (int i = -25; i <= 25; i++) {
+                ////                    results.add((double) doCoincidence(histogram, i * 4000, 3000) / exp);
+                ////                }
+                ////                for (Double d : results) {
+                ////                    System.out.print(d + "\t");
+                ////                }
+                ////                System.out.println();
+                //
+                //                if (counters[15] != 0 && (counters[0] == 0 || counters[1] == 0 || counters[4] == 0) && jCheckBoxAutoRestart.isSelected()) {
+                //                    new Thread(() -> {
+                //                        try {
+                //                            Socket socket = new Socket("192.168.1.80", 20008);
+                //                            PrintWriter pw = new PrintWriter(socket.getOutputStream());
+                //                            pw.println("restart");
+                //                            pw.close();
+                //                        } catch (IOException ex) {
+                //                            Logger.getLogger(AppFrame.class.getName()).log(Level.SEVERE, null, ex);
+                //                        }
+                //                    }).start();
+                //                }
+                //
+                //                ArrayList<ShortTermDataItem> stdis = jCheckBoxViewHOM.isSelected()
+                //                        ? doHOMHistogram(triggerList, signalList, monitorList, clockList, jCheckBoxClockOut.isSelected(), clockGateWidth, clockRep)
+                //                        : new ArrayList<>();
+                //
+                //                SwingUtilities.invokeLater(() -> {
+                //                    for (int i = 0; i < counters.length; i++) {
+                //                        counterFields[i].setText(formatComm(counters[i]));
+                //                    }
+                //                    jTextFieldTriggerFrequency.setText(formatComm((int) triggerInfo[0]));
+                //                    jTextFieldTriggerPeriod.setText(formatDouble((double) triggerInfo[1]));
+                //                    jTextFieldTriggerPeriodPM.setText(formatDouble((double) triggerInfo[2]));
+                //                    if (histogram != null) {
+                //                        List<Double> originalXData = histogram.getxAxisData();
+                //                        ArrayList<Double> xData = new ArrayList<>(originalXData.size());
+                //                        originalXData.forEach((originalX) -> {
+                //                            xData.add(originalX / 1000);
+                //                        });
+                //                        Series series = chart.getSeriesMap().get("Histogram");
+                //                        Collection<? extends Number> originalYData = series.getYData();
+                //                        ArrayList<Double> yData = new ArrayList<>(histogram.getyAxisData());
+                //                        if (originalYData != null && originalYData.size() == histogram.getyAxisData().size() && jCheckBoxInt.isSelected()) {
+                //                            Iterator<? extends Number> it = originalYData.iterator();
+                //                            for (int i = 0; i < yData.size(); i++) {
+                //                                yData.set(i, yData.get(i) + it.next().doubleValue());
+                //                            }
+                //                        }
+                //
+                //                        preXList = xData;
+                //                        preYList = yData;
+                ////                            System.out.println(xData);
+                ////                            System.out.println(yData);
+                ////                            System.out.prinprintlntln("---------------------------");
+                //                        chartPanel.updateSeries("Histogram", xData, yData, null);
+                //                        jTextFieldCoincidence.setText("" + coincidenceCount);
+                //                        jTextFieldCoinEffe1.setText("" + formatDouble(coinEff));
+                //                        jTextFieldCoinEffe2.setText("" + formatDouble(staticticCoinEff));
+                //                    }
+                //
+                //                    //HOM
+                //                    for (ShortTermDataItem stdi : stdis) {
+                //                        homCoins[stdi.k] += stdi.councidenceCount;
+                //                        homExpCoins[stdi.k] += stdi.expectCoincidenceCount;
+                //                    }
+                //                    ArrayList<Double> xData = new ArrayList<>();
+                //                    ArrayList<Double> yData = new ArrayList<>();
+                //                    ArrayList<Double> eData = new ArrayList<>();
+                //                    for (int i = 0; i < homCoins.length; i++) {
+                //                        double coins = homCoins[i];
+                //                        double expCoins = homExpCoins[i];
+                //                        if (expCoins != 0) {
+                //                            xData.add(Math.pow(1.1, i));
+                //                            yData.add(coins / expCoins);
+                //                            eData.add(Math.sqrt(1 / coins) * coins / expCoins);
+                //                        }
+                //                    }
+                //                    if (xData.size() > 0) {
+                //                        homChartPanel.updateSeries("HOM", xData, yData, eData);
+                //                    }
+                //                });
             } catch (InterruptedException ex) {
                 Logger.getLogger(AppFrame.class.getName()).log(Level.SEVERE, null, ex);
             }
